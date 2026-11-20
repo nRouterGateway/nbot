@@ -136,12 +136,13 @@ export const defaultTools: ToolDefinition[] = [
   {
     name: "browser_visit",
     description:
-      "Open a URL in a real headless browser (Playwright) using the bot's persistent profile (~/.nbot/profiles/<profile>) and return rendered title, metadata, headings, and visible text.",
+      "Open a URL in a real Playwright browser using the bot's persistent profile (~/.nbot/profiles/<profile>) and return rendered title, metadata, headings, and visible text. Set NBOT_HEADED=1 or headed=true to watch the browser window live.",
     parameters: {
       type: "object",
       properties: {
         url: { type: "string", description: "HTTPS URL to open in the browser" },
         waitMs: { type: "number", description: "Optional settle wait in ms (default 1500)" },
+        headed: { type: "boolean", description: "Open a visible browser window (default false, or true if NBOT_HEADED=1)" },
       },
       required: ["url"],
     },
@@ -157,13 +158,14 @@ export const defaultTools: ToolDefinition[] = [
       const profileName = ctx.bot.manifest.browser?.profile ?? ctx.bot.manifest.name;
       const profileDir = join(homedir(), ".nbot", "profiles", profileName);
       mkdirSync(profileDir, { recursive: true });
+      const headless = !(Boolean(args.headed) || process.env.NBOT_HEADED === "1");
 
       let context;
       try {
-        context = await pw.chromium.launchPersistentContext(profileDir, { headless: true });
+        context = await pw.chromium.launchPersistentContext(profileDir, { headless });
       } catch {
         context = await pw.chromium.launchPersistentContext(profileDir, {
-          headless: true,
+          headless,
           channel: "chrome",
         });
       }
