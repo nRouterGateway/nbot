@@ -37,7 +37,98 @@ export const defaultTools: ToolDefinition[] = [
       return {
         status: resp.status,
         bytes: text.length,
+        truncated: text.length > 12000,
         body: text.slice(0, 12000),
+      };
+    },
+  },
+  {
+    name: "nrouter_catalog_summary",
+    description:
+      "Fetch https://app.nrouter.ai/api/public/models, https://api.nrouter.ai/health, and https://app.nrouter.ai/api/health and return exact aggregated counts across all models.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    execute: async () => {
+      const [gwRes, appRes, modelsRes] = await Promise.all([
+        fetch("https://api.nrouter.ai/health", { headers: { "User-Agent": "nbot/0.1" } }),
+        fetch("https://app.nrouter.ai/api/health", { headers: { "User-Agent": "nbot/0.1" } }),
+        fetch("https://app.nrouter.ai/api/public/models", { headers: { "User-Agent": "nbot/0.1" } }),
+      ]);
+      const gwHealth = await gwRes.json().catch(() => ({ status: gwRes.status }));
+      const appHealth = await appRes.json().catch(() => ({ status: appRes.status }));
+      const raw = (await modelsRes.json().catch(() => ({}))) as Record<string, unknown>;
+      const models = (Array.isArray(raw.data) ? raw.data : Array.isArray(raw) ? raw : []) as Array<
+        Record<string, unknown>
+      >;
+
+      const providers: Record<string, number> = {};
+      const modes: Record<string, number> = {};
+      const deprecated: string[] = [];
+      const missingPricing: string[] = [];
+      let missingBenchmarksCount = 0;
+
+      for (const m of models) {
+        const prov = String(m.provider ?? m.maker ?? "unknown");
+        providers[prov] = (providers[prov] ?? 0) + 1;
+        const mode = String(m.mode ?? "unknown");
+        modes[mode] = (modes[mode] ?? 0) + 1;
+        const mid = String(m.model_id ?? m.id ?? m.model_name ?? "unknown");
+        if (m.is_deprecated) deprecated.push(mid);
+        const info = (m.model_info && typeof m.model_info === "object" ? m.model_info : {}) as Record<
+          string,
+          unknown
+        >;
+        const hasPrice =
+          info.input_cost_per_token != null ||
+          m.non_token_pricing != null ||
+          m.free_tier_eligible === true;
+        if (!hasPrice) missingPricing.push(mid);
+        if (!m.benchmarks) missingBenchmarksCount++;
+      }
+
+      return {
+        gateway_health: gwHealth,
+        app_health: appHealth,
+        total_models: models.length,
+        providers,
+        modes,
+        deprecated_count: deprecated.length,
+        deprecated_sample: deprecated.slice(0, 10),
+        missing_pricing_count: missingPricing.length,
+        missing_pricing_sample: missingPricing.slice(0, 10),
+        missing_benchmarks_count: missingBenchmarksCount,
+      };
+    },
+  },
+  {
+    name: "nrouter_seo_audit",
+    description:
+      "Compare https://app.nrouter.ai/api/public/models against https://nrouter.ai/sitemap.xml and return exact model-page parity metrics.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    execute: async () => {
+      const [modelsRes, sitemapRes] = await Promise.all([
+        fetch("https://app.nrouter.ai/api/public/models", { headers: { "User-Agent": "nbot/0.1" } }),
+        fetch("https://nrouter.ai/sitemap.xml", { headers: { "User-Agent": "nbot/0.1" } }),
+      ]);
+      const raw = (await modelsRes.json().catch(() => ({}))) as Record<string, unknown>;
+      const models = (Array.isArray(raw.data) ? raw.data : Array.isArray(raw) ? raw : []) as Array<
+        Record<string, unknown>
+      >;
+      const sitemapXml = await sitemapRes.text();
+      const sitemapModelUrls = (sitemapXml.match(/\/models\//g) ?? []).length;
+
+      return {
+        public_catalog_count: models.length,
+        sitemap_status: sitemapRes.status,
+        sitemap_bytes: sitemapXml.length,
+        sitemap_model_urls: sitemapModelUrls,
+        parity_delta: models.length - sitemapModelUrls,
+        sample_model_ids: models.slice(0, 15).map((m) => m.model_id ?? m.id),
       };
     },
   },
