@@ -18,6 +18,7 @@ export interface BotManifest {
   name: string;
   version?: string;
   description?: string;
+  harness?: "api" | "claude-code";
   trigger?: {
     type?: string;
     cron?: string;

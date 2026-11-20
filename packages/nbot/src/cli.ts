@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { discoverBots } from "./loader.js";
+import { discoverBots, loadBotBundle } from "./loader.js";
 import { runBot } from "./runner.js";
 
 function parseFlags(argv: string[]) {
@@ -148,7 +149,29 @@ async function main() {
       console.error("Usage: nbot run <bot-dir> [options]");
       process.exit(1);
     }
-    const res = await runBot(botDir, {
+    const bundle = loadBotBundle(botDir);
+    const harness =
+      (typeof flags.harness === "string" ? flags.harness : undefined) ??
+      bundle.manifest.harness ??
+      "api";
+
+    if (harness === "claude-code") {
+      const prompt = [
+        `Execute bot '${bundle.manifest.name}' (${bundle.dir}/SKILL.md).`,
+        typeof flags.target === "string" ? `Target: ${flags.target}` : "",
+        typeof flags.input === "string" ? `Input: ${flags.input}` : "",
+        "Follow the SKILL.md instructions strictly and output the final structured result.",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const res = spawnSync("claude", ["-p", prompt, "--allowedTools", "Read,Bash"], {
+        stdio: "inherit",
+        cwd: process.cwd(),
+      });
+      process.exit(res.status ?? 1);
+    }
+
+    const res = await runBot(bundle, {
       target: typeof flags.target === "string" ? flags.target : undefined,
       model: typeof flags.model === "string" ? flags.model : undefined,
       baseUrl: typeof flags["base-url"] === "string" ? flags["base-url"] : undefined,
