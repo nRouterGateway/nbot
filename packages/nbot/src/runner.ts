@@ -59,7 +59,7 @@ export async function runBot(
     DEFAULT_BASE_URL
   ).replace(/\/+$/, "");
 
-  const model =
+  let model =
     options.model ??
     clientDefaults.model ??
     bundle.manifest.model?.model ??
@@ -174,32 +174,12 @@ export async function runBot(
     messages.push(msg);
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      if (!msg.content && openAITools.length > 0 && step === 0) {
+      if (!msg.content && openAITools.length > 0 && step === 0 && model !== "openai/gpt-4o-mini") {
         // Model returned an empty tool_calls frame (e.g., finish_reason="tool_calls" with []).
-        // Retry once without tools so the bot still produces a clear response instead of empty output.
-        const fallbackResp = await fetchFn(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ model, temperature: 0.2, messages }),
-        });
-        if (fallbackResp.ok) {
-          const fallbackData = (await fallbackResp.json()) as {
-            model?: string;
-            usage?: Record<string, unknown>;
-            choices: Array<{ message: OpenAIMessage }>;
-          };
-          return {
-            bot: bundle.manifest.name,
-            model: fallbackData.model ?? servedModel,
-            output: fallbackData.choices?.[0]?.message?.content ?? "",
-            usage: fallbackData.usage ?? lastUsage,
-            toolCalls: executedCalls,
-            pendingApprovals,
-          };
-        }
+        // Retry once with a verified tool-calling model while keeping tools attached so real tools execute.
+        model = "openai/gpt-4o-mini";
+        messages.pop();
+        continue;
       }
       return {
         bot: bundle.manifest.name,
