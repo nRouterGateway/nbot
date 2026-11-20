@@ -8,7 +8,8 @@
     "app",
     "shared",
     "extension",
-    "management-agent"
+    "management-agent",
+    "packages/nbot"
   ],
   "scripts": {
     "build": "bun run generate:app-config && bun run --filter '*' build",
