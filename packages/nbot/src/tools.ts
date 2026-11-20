@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ToolContext, ToolDefinition } from "./types.js";
 
@@ -130,6 +131,75 @@ export const defaultTools: ToolDefinition[] = [
         parity_delta: models.length - sitemapModelUrls,
         sample_model_ids: models.slice(0, 15).map((m) => m.model_id ?? m.id),
       };
+    },
+  },
+  {
+    name: "browser_visit",
+    description:
+      "Open a URL in a real headless browser (Playwright) using the bot's persistent profile (~/.nbot/profiles/<profile>) and return rendered title, metadata, headings, and visible text.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "HTTPS URL to open in the browser" },
+        waitMs: { type: "number", description: "Optional settle wait in ms (default 1500)" },
+      },
+      required: ["url"],
+    },
+    execute: async (args, ctx: ToolContext) => {
+      const url = String(args.url ?? "");
+      if (!url.startsWith("https://") && !url.startsWith("http://localhost")) {
+        return { error: "Only https:// or http://localhost URLs are allowed" };
+      }
+      const pw = await import("playwright-core").catch(() => null);
+      if (!pw) {
+        return { error: "playwright-core is not installed" };
+      }
+      const profileName = ctx.bot.manifest.browser?.profile ?? ctx.bot.manifest.name;
+      const profileDir = join(homedir(), ".nbot", "profiles", profileName);
+      mkdirSync(profileDir, { recursive: true });
+
+      let context;
+      try {
+        context = await pw.chromium.launchPersistentContext(profileDir, { headless: true });
+      } catch {
+        context = await pw.chromium.launchPersistentContext(profileDir, {
+          headless: true,
+          channel: "chrome",
+        });
+      }
+
+      try {
+        const page = context.pages()[0] ?? (await context.newPage());
+        const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        const waitMs = Math.min(Math.max(Number(args.waitMs ?? 1500), 0), 5000);
+        if (waitMs > 0) await page.waitForTimeout(waitMs);
+
+        const data = await page.evaluate(() => {
+          const getMeta = (name: string) =>
+            document.querySelector(`meta[name="${name}"]`)?.getAttribute("content") ?? null;
+          const canonical =
+            document.querySelector('link[rel="canonical"]')?.getAttribute("href") ?? null;
+          const h1 = document.querySelector("h1")?.textContent?.trim() ?? null;
+          const text = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
+          return {
+            title: document.title,
+            metaDescription: getMeta("description"),
+            canonical,
+            h1,
+            textSnippet: text.slice(0, 4000),
+          };
+        });
+
+        return {
+          url,
+          finalUrl: page.url(),
+          status: resp?.status() ?? null,
+          profile: profileName,
+          ...data,
+        };
+      } finally {
+        await context.close();
+      }
     },
   },
   {
