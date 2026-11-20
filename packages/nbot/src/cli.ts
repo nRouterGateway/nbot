@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { discoverBots, loadBotBundle } from "./loader.js";
 import { runBot } from "./runner.js";
+import { startUiServer } from "./ui.js";
 
 function parseFlags(argv: string[]) {
   const positional: string[] = [];
@@ -35,6 +36,7 @@ Usage:
   nbot run <bot-dir> [--target <target>] [--model <model>] [--base-url <url>] [--input <prompt>] [--dry]
   nbot init <bot-name> [--dir <parent-dir>]
   nbot login <bot-name> <url>
+  nbot ui [bots-dir] [--port 4242]
 `);
 }
 
@@ -140,6 +142,13 @@ async function main() {
       process.exit(1);
     }
     await cmdLogin(name, url);
+    return;
+  }
+
+  if (cmd === "ui") {
+    const dir = resolve(positional[1] ?? "./bots");
+    const port = typeof flags.port === "string" ? Number(flags.port) : 4242;
+    startUiServer(dir, Number.isFinite(port) ? port : 4242);
     return;
   }
 
