@@ -9,7 +9,8 @@
     "shared",
     "extension",
     "management-agent",
-    "packages/nbot"
+    "packages/nbot",
+    "agent-nrouter"
   ],
   "scripts": {
     "build": "bun run generate:app-config && bun run --filter '*' build",

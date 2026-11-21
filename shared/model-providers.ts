@@ -39,7 +39,7 @@ import specJson from "./model-providers.json";
  * provider row this list names and the file lacks, or a row in the file this list has never heard
  * of, stops this Bot at startup rather than at its first model call.
  */
-export const PROVIDER_IDS = ["openai", "anthropic", "google"] as const;
+export const PROVIDER_IDS = ["openai", "anthropic", "google", "nrouter"] as const;
 
 export type ModelProviderId = (typeof PROVIDER_IDS)[number];
 

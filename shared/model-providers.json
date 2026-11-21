@@ -18,9 +18,16 @@
       "key_variable": "GOOGLE_API_KEY",
       "base_url_variable": "GOOGLE_GENERATIVE_AI_BASE_URL",
       "default_model": "gemini-2.5-flash"
+    },
+    "nrouter": {
+      "label": "nRouter",
+      "key_variable": "NROUTER_API_KEY",
+      "base_url_variable": "NROUTER_BASE_URL",
+      "default_model": "nrouter/auto"
     }
   },
   "bots": {
+    "agent-nrouter": { "provider": "nrouter", "model": "nrouter/auto" },
     "agent-mastra": { "provider": "openai", "model": "gpt-4o-mini" },
     "agent-adk": { "provider": "openai", "model": "gpt-4o-mini" },
     "agent-antigravity": { "provider": "google", "model": "gemini-3.6-flash" },
