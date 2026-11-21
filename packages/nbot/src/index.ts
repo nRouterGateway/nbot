@@ -7,6 +7,7 @@ export type {
   BotBundle,
   BotManifest,
   BotModelConfig,
+  HarnessStreamEvent,
   NbotClientOptions,
   PendingApproval,
   RunBotOptions,

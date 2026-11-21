@@ -71,6 +71,15 @@ export interface NbotClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export type HarnessStreamEvent =
+  | { type: "run_started"; bot: string; model: string }
+  | { type: "text_delta"; delta: string }
+  | { type: "tool_call_start"; id: string; name: string; args: Record<string, unknown> }
+  | { type: "tool_call_result"; id: string; name: string; preview: string }
+  | { type: "approval_required"; id: string; name: string; args: Record<string, unknown>; reason: string }
+  | { type: "run_finished"; bot: string; model: string }
+  | { type: "run_error"; message: string };
+
 export interface RunBotOptions {
   target?: string;
   input?: string;
@@ -81,6 +90,7 @@ export interface RunBotOptions {
   maxSteps?: number;
   extraTools?: ToolDefinition[];
   dryRun?: boolean;
+  onEvent?: (event: HarnessStreamEvent) => void;
 }
 
 export interface RunBotResult {

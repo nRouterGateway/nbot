@@ -2,6 +2,7 @@ import { loadBotBundle } from "./loader.js";
 import { defaultTools } from "./tools.js";
 import type {
   BotBundle,
+  HarnessStreamEvent,
   NbotClientOptions,
   PendingApproval,
   RunBotOptions,
@@ -39,6 +40,107 @@ function isApprovalRequired(bundle: BotBundle, tool: ToolDefinition): boolean {
   if (tool.requiresApproval) return true;
   const gated = bundle.manifest.approval_policy?.require_approval ?? [];
   return gated.includes(tool.name);
+}
+
+async function readStreamedChoice(
+  resp: Response,
+  emit: (e: HarnessStreamEvent) => void,
+): Promise<{
+  model?: string;
+  usage?: Record<string, unknown>;
+  message: OpenAIMessage;
+}> {
+  const contentType = resp.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/event-stream") || !resp.body) {
+    const data = (await resp.json()) as {
+      model?: string;
+      usage?: Record<string, unknown>;
+      choices: Array<{ message: OpenAIMessage }>;
+    };
+    const msg = data.choices?.[0]?.message;
+    if (!msg) throw new Error("Gateway returned empty choices");
+    if (msg.content) emit({ type: "text_delta", delta: msg.content });
+    return { model: data.model, usage: data.usage, message: msg };
+  }
+
+  const decoder = new TextDecoder();
+  let buf = "";
+  let servedModel: string | undefined;
+  let lastUsage: Record<string, unknown> | undefined;
+  let fullContent = "";
+  const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
+
+  for await (const chunk of resp.body) {
+    buf += decoder.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const raw = line.slice(5).trim();
+      if (!raw || raw === "[DONE]") continue;
+      let parsed: {
+        model?: string;
+        usage?: Record<string, unknown>;
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+        }>;
+      };
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (parsed.model) servedModel = parsed.model;
+      if (parsed.usage) lastUsage = parsed.usage;
+      const delta = parsed.choices?.[0]?.delta;
+      if (!delta) continue;
+
+      if (typeof delta.content === "string" && delta.content.length > 0) {
+        fullContent += delta.content;
+        emit({ type: "text_delta", delta: delta.content });
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          const prev = toolCallsMap.get(idx) ?? {
+            id: tc.id || `call_${idx}`,
+            name: "",
+            arguments: "",
+          };
+          if (tc.id) prev.id = tc.id;
+          if (tc.function?.name) prev.name += tc.function.name;
+          if (tc.function?.arguments) prev.arguments += tc.function.arguments;
+          toolCallsMap.set(idx, prev);
+        }
+      }
+    }
+  }
+
+  const toolCalls = [...toolCallsMap.values()]
+    .filter((t) => t.name)
+    .map((t) => ({
+      id: t.id,
+      type: "function" as const,
+      function: { name: t.name, arguments: t.arguments || "{}" },
+    }));
+
+  return {
+    model: servedModel,
+    usage: lastUsage,
+    message: {
+      role: "assistant",
+      content: fullContent || null,
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    },
+  };
 }
 
 /**
@@ -89,6 +191,7 @@ export async function runBot(
   const fetchFn = clientDefaults.fetchImpl ?? fetch;
   const maxSteps = options.maxSteps ?? 6;
   const cwd = options.cwd ?? bundle.dir;
+  const emit = (ev: HarnessStreamEvent) => options.onEvent?.(ev);
 
   if (options.dryRun) {
     return {
@@ -99,6 +202,8 @@ export async function runBot(
       pendingApprovals: [],
     };
   }
+
+  emit({ type: "run_started", bot: bundle.manifest.name, model });
 
   const systemPrompt = [
     `You are nbot '${bundle.manifest.name}'. Follow your SKILL.md strictly.`,
@@ -136,6 +241,7 @@ export async function runBot(
     const body: Record<string, unknown> = {
       model,
       temperature: 0.2,
+      stream: Boolean(options.onEvent),
       messages,
     };
     if (openAITools.length > 0) {
@@ -153,34 +259,25 @@ export async function runBot(
 
     if (!resp.ok) {
       const errText = await resp.text();
-      throw new Error(`Gateway ${baseUrl} returned HTTP ${resp.status}: ${errText}`);
+      const errMsg = `Gateway ${baseUrl} returned HTTP ${resp.status}: ${errText}`;
+      emit({ type: "run_error", message: errMsg });
+      throw new Error(errMsg);
     }
 
-    const data = (await resp.json()) as {
-      model?: string;
-      usage?: Record<string, unknown>;
-      choices: Array<{
-        message: OpenAIMessage;
-      }>;
-    };
-
-    servedModel = data.model ?? servedModel;
-    lastUsage = data.usage ?? lastUsage;
-    const msg = data.choices?.[0]?.message;
-    if (!msg) {
-      throw new Error("Gateway returned empty choices");
-    }
+    const parsed = await readStreamedChoice(resp, emit);
+    servedModel = parsed.model ?? servedModel;
+    lastUsage = parsed.usage ?? lastUsage;
+    const msg = parsed.message;
 
     messages.push(msg);
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
       if (!msg.content && openAITools.length > 0 && step === 0 && model !== "openai/gpt-4o-mini") {
-        // Model returned an empty tool_calls frame (e.g., finish_reason="tool_calls" with []).
-        // Retry once with a verified tool-calling model while keeping tools attached so real tools execute.
         model = "openai/gpt-4o-mini";
         messages.pop();
         continue;
       }
+      emit({ type: "run_finished", bot: bundle.manifest.name, model: servedModel });
       return {
         bot: bundle.manifest.name,
         model: servedModel,
@@ -201,20 +298,32 @@ export async function runBot(
         parsedArgs = {};
       }
 
+      emit({ type: "tool_call_start", id: tc.id, name: toolName, args: parsedArgs });
+
       if (!tool) {
+        const errPayload = JSON.stringify({ error: `Unknown tool '${toolName}'` });
+        emit({ type: "tool_call_result", id: tc.id, name: toolName, preview: errPayload });
         messages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({ error: `Unknown tool '${toolName}'` }),
+          content: errPayload,
         });
         continue;
       }
 
       if (isApprovalRequired(bundle, tool)) {
+        const reason = `Tool '${toolName}' requires human approval per nbot.yaml`;
         pendingApprovals.push({
           tool: toolName,
           args: parsedArgs,
-          reason: `Tool '${toolName}' requires human approval per nbot.yaml`,
+          reason,
+        });
+        emit({
+          type: "approval_required",
+          id: tc.id,
+          name: toolName,
+          args: parsedArgs,
+          reason,
         });
         messages.push({
           role: "tool",
@@ -233,14 +342,22 @@ export async function runBot(
         cwd,
       });
       executedCalls.push({ name: toolName, args: parsedArgs, result });
+      const serialized = typeof result === "string" ? result : JSON.stringify(result);
+      emit({
+        type: "tool_call_result",
+        id: tc.id,
+        name: toolName,
+        preview: serialized.slice(0, 240),
+      });
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: typeof result === "string" ? result : JSON.stringify(result),
+        content: serialized,
       });
     }
   }
 
+  emit({ type: "run_finished", bot: bundle.manifest.name, model: servedModel });
   return {
     bot: bundle.manifest.name,
     model: servedModel,
