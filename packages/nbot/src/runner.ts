@@ -272,11 +272,6 @@ export async function runBot(
     messages.push(msg);
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      if (!msg.content && openAITools.length > 0 && step === 0 && model !== "openai/gpt-4o-mini") {
-        model = "openai/gpt-4o-mini";
-        messages.pop();
-        continue;
-      }
       emit({ type: "run_finished", bot: bundle.manifest.name, model: servedModel });
       return {
         bot: bundle.manifest.name,

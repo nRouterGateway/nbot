@@ -138,18 +138,63 @@ export async function runNrouterAgent(input: RunAgentInput, options: RunOptions)
   emit({ type: "RUN_STARTED", threadId, runId });
 
   try {
-    let { baseUrl, apiKey, model } = resolveEndpointAndKey(env);
+    const resolved = resolveEndpointAndKey(env);
+    const baseUrl = resolved.baseUrl;
+    const apiKey = resolved.apiKey;
+    const forwardedModel =
+      typeof input.forwardedProps?.model === "string" && input.forwardedProps.model.trim()
+        ? input.forwardedProps.model.trim()
+        : undefined;
+    const model = forwardedModel ?? resolved.model;
     const messages = toOpenAiMessages(input);
     const clientToolNames = new Set((input.tools ?? []).map((t) => t.name));
 
-    const openAiTools = (input.tools ?? []).map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description ?? t.name,
-        parameters: t.parameters ?? { type: "object", properties: {} },
-      },
-    }));
+    const serverTools = new Map<
+      string,
+      {
+        schema: Record<string, unknown>;
+        execute: (args: Record<string, unknown>) => Promise<unknown>;
+      }
+    >([
+      [
+        "http_get_public",
+        {
+          schema: {
+            type: "function",
+            function: {
+              name: "http_get_public",
+              description: "Fetch a public HTTPS URL (read-only).",
+              parameters: {
+                type: "object",
+                properties: { url: { type: "string" } },
+                required: ["url"],
+              },
+            },
+          },
+          execute: async (args) => {
+            const url = String(args.url ?? "");
+            if (!url.startsWith("https://")) return { error: "Only https:// URLs are allowed" };
+            const r = await fetcher(url, { headers: { "User-Agent": "agent-nrouter/1.0" } });
+            const text = await r.text();
+            return { status: r.status, bytes: text.length, body: text.slice(0, 12000) };
+          },
+        },
+      ],
+    ]);
+
+    const openAiTools = [
+      ...(input.tools ?? []).map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description ?? t.name,
+          parameters: t.parameters ?? { type: "object", properties: {} },
+        },
+      })),
+      ...[...serverTools.entries()]
+        .filter(([name]) => !clientToolNames.has(name))
+        .map(([, v]) => v.schema),
+    ];
 
     for (let step = 0; step < maxSteps; step++) {
       const reqBody: Record<string, unknown> = {
@@ -288,10 +333,6 @@ export async function runNrouterAgent(input: RunAgentInput, options: RunOptions)
       }
 
       if (completedToolCalls.length === 0) {
-        if (!fullText && openAiTools.length > 0 && step === 0 && model !== "openai/gpt-4o-mini") {
-          model = "openai/gpt-4o-mini";
-          continue;
-        }
         break;
       }
 
@@ -300,6 +341,43 @@ export async function runNrouterAgent(input: RunAgentInput, options: RunOptions)
       // and sends the next turn with the tool result in `messages`.
       if (completedToolCalls.some((tc) => clientToolNames.has(tc.name))) {
         break;
+      }
+
+      // Execute server-owned tools (e.g. http_get_public) in-loop and append assistant + tool turns.
+      messages.push({
+        role: "assistant",
+        content: fullText || null,
+        tool_calls: completedToolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: tc.args || "{}" },
+        })),
+      });
+
+      for (const tc of completedToolCalls) {
+        const srv = serverTools.get(tc.name);
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          parsedArgs = JSON.parse(tc.args || "{}") as Record<string, unknown>;
+        } catch {
+          parsedArgs = {};
+        }
+        const out = srv
+          ? await srv.execute(parsedArgs)
+          : { error: `Unknown server tool '${tc.name}'` };
+        const serialized = typeof out === "string" ? out : JSON.stringify(out);
+        emit({
+          type: "TOOL_CALL_RESULT",
+          messageId: `tool_${randomUUID()}`,
+          toolCallId: tc.id,
+          content: serialized,
+          role: "tool",
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: serialized,
+        });
       }
     }
 
