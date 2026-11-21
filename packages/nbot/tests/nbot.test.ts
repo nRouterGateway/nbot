@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createNbot, discoverBots, loadBotBundle, narrowTools } from "../src/index.js";
+import { createNbot, discoverBots, loadBotBundle, narrowTools, parseBotBundle } from "../src/index.js";
 import type { ToolDefinition } from "../src/types.js";
 
 describe("@nrouter/nbot SDK", () => {
@@ -115,10 +115,84 @@ describe("@nrouter/nbot SDK", () => {
       expect(res.toolCalls).toHaveLength(1);
       expect(res.toolCalls[0].name).toBe("read_data");
       expect(res.pendingApprovals).toHaveLength(1);
+      expect(res.pendingApprovals[0].id).toBe("tc2");
       expect(res.pendingApprovals[0].tool).toBe("send_email");
       expect(res.output).toBe("Done; email awaiting approval.");
+
+      // Resume with approvedToolResults executes the gated tool
+      step = 0;
+      const resumed = await client.run(botDir, { approvedToolResults: { tc2: true } });
+      expect(emailExecuted).toBe(true);
+      expect(resumed.pendingApprovals).toHaveLength(0);
+      expect(resumed.toolCalls.map((t) => t.name)).toEqual(["read_data", "send_email"]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  test("parseBotBundle supports declarative manifest.tools and manifest.parameters", async () => {
+    const bundle = parseBotBundle(
+      [
+        "name: playground-bot",
+        "model:",
+        "  model: openai/gpt-4o-mini",
+        "parameters:",
+        "  max_tokens: 512",
+        "  reasoning_effort: medium",
+        "tools:",
+        "  - name: lookup_order",
+        "    description: Look up order by ID",
+        "    parameters: { type: object, properties: { id: { type: string } } }",
+        "    mockResponse: { status: shipped }",
+      ].join("\n"),
+      "---\nname: playground-bot\nskill_tools:\n  - lookup_order\n---\nLook up the order.",
+    );
+
+    let capturedBody: Record<string, unknown> | undefined;
+    let callNum = 0;
+    const client = createNbot({
+      apiKey: "test-key",
+      fetchImpl: async (_url, init) => {
+        callNum++;
+        capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        if (callNum === 1) {
+          return new Response(
+            JSON.stringify({
+              model: "openai/gpt-4o-mini",
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                      {
+                        id: "call_order_1",
+                        type: "function",
+                        function: { name: "lookup_order", arguments: '{"id":"ord_99"}' },
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            model: "openai/gpt-4o-mini",
+            choices: [{ message: { role: "assistant", content: "Order ord_99 has shipped." } }],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+
+    const result = await client.run(bundle, { input: "Where is ord_99?" });
+    expect(capturedBody?.max_tokens).toBe(512);
+    expect(capturedBody?.reasoning_effort).toBe("medium");
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0].result).toEqual({ status: "shipped" });
+    expect(result.output).toBe("Order ord_99 has shipped.");
   });
 });

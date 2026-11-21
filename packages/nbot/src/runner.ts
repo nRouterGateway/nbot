@@ -181,11 +181,36 @@ export async function runBot(
     );
   }
 
-  const allTools = [
+  const baseTools = [
     ...defaultTools,
     ...(clientDefaults.tools ?? []),
     ...(options.extraTools ?? []),
   ];
+  const baseByName = new Map<string, ToolDefinition>();
+  for (const t of baseTools) {
+    baseByName.set(t.name, t);
+  }
+  for (const spec of bundle.manifest.tools ?? []) {
+    if (!spec?.name) continue;
+    const existing = baseByName.get(spec.name);
+    if (existing) {
+      baseByName.set(spec.name, {
+        ...existing,
+        description: spec.description || existing.description,
+        parameters: spec.parameters ?? existing.parameters,
+        requiresApproval: spec.requiresApproval ?? existing.requiresApproval,
+      });
+    } else {
+      baseByName.set(spec.name, {
+        name: spec.name,
+        description: spec.description ?? `Declarative tool '${spec.name}'`,
+        parameters: spec.parameters ?? { type: "object", properties: {} },
+        requiresApproval: spec.requiresApproval,
+        execute: async (args) => spec.mockResponse ?? { ok: true, tool: spec.name, args },
+      });
+    }
+  }
+  const allTools = [...baseByName.values()];
   const activeTools = narrowTools(bundle, allTools);
   const toolMap = new Map(activeTools.map((t) => [t.name, t]));
   const fetchFn = clientDefaults.fetchImpl ?? fetch;
@@ -237,13 +262,22 @@ export async function runBot(
   let lastUsage: Record<string, unknown> | undefined;
   let servedModel = model;
 
+  const manifestParams =
+    bundle.manifest.parameters && typeof bundle.manifest.parameters === "object"
+      ? bundle.manifest.parameters
+      : {};
+
   for (let step = 0; step < maxSteps; step++) {
     const body: Record<string, unknown> = {
-      model,
       temperature: 0.2,
+      ...manifestParams,
+      model,
       stream: Boolean(options.onEvent),
       messages,
     };
+    if (body.temperature !== undefined && body.top_p !== undefined && /claude/i.test(model)) {
+      delete body.top_p;
+    }
     if (openAITools.length > 0) {
       body.tools = openAITools;
     }
@@ -307,26 +341,61 @@ export async function runBot(
       }
 
       if (isApprovalRequired(bundle, tool)) {
-        const reason = `Tool '${toolName}' requires human approval per nbot.yaml`;
-        pendingApprovals.push({
-          tool: toolName,
-          args: parsedArgs,
-          reason,
-        });
+        const approvedMap = options.approvedToolResults;
+        const approvedEntry =
+          approvedMap && Object.prototype.hasOwnProperty.call(approvedMap, tc.id)
+            ? approvedMap[tc.id]
+            : approvedMap && Object.prototype.hasOwnProperty.call(approvedMap, toolName)
+              ? approvedMap[toolName]
+              : undefined;
+
+        if (approvedEntry === undefined) {
+          const reason = `Tool '${toolName}' requires human approval per nbot.yaml`;
+          pendingApprovals.push({
+            id: tc.id,
+            tool: toolName,
+            args: parsedArgs,
+            reason,
+          });
+          emit({
+            type: "approval_required",
+            id: tc.id,
+            name: toolName,
+            args: parsedArgs,
+            reason,
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              status: "pending_approval",
+              message: `Action '${toolName}' queued for human approval and NOT executed.`,
+            }),
+          });
+          continue;
+        }
+
+        const approvedResult =
+          approvedEntry === true
+            ? await tool.execute(parsedArgs, {
+                bot: bundle,
+                target: options.target,
+                cwd,
+              })
+            : approvedEntry;
+        executedCalls.push({ name: toolName, args: parsedArgs, result: approvedResult });
+        const serializedApproved =
+          typeof approvedResult === "string" ? approvedResult : JSON.stringify(approvedResult);
         emit({
-          type: "approval_required",
+          type: "tool_call_result",
           id: tc.id,
           name: toolName,
-          args: parsedArgs,
-          reason,
+          preview: serializedApproved.slice(0, 240),
         });
         messages.push({
           role: "tool",
           tool_call_id: tc.id,
-          content: JSON.stringify({
-            status: "pending_approval",
-            message: `Action '${toolName}' queued for human approval and NOT executed.`,
-          }),
+          content: serializedApproved,
         });
         continue;
       }

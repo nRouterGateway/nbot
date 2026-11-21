@@ -169,8 +169,30 @@ const HTML_PAGE = `<!doctype html>
               act.className = "approval-actions";
               const okB = document.createElement("button");
               okB.className = "btn-approve";
-              okB.textContent = "Approve";
-              okB.onclick = () => { c.innerHTML = "✓ Approved <code>" + ev.name + "</code>"; };
+              okB.textContent = "Approve & Resume";
+              okB.onclick = async () => {
+                okB.disabled = true;
+                c.innerHTML = "⚡ Approved <code>" + ev.name + "</code> — resuming...";
+                try {
+                  const resumeRes = await fetch("/api/run", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      bot: activeBot.name,
+                      input: prompt || undefined,
+                      headed: headedEl.checked,
+                      approvedToolResults: { [ev.name]: true, [ev.id]: true }
+                    })
+                  });
+                  const resumeData = await resumeRes.json();
+                  c.innerHTML = "✓ Approved &amp; executed <code>" + ev.name + "</code>";
+                  if (resumeData.output) {
+                    textEl.textContent = resumeData.output;
+                  }
+                } catch (resumeErr) {
+                  c.innerHTML = "Error resuming: " + String(resumeErr);
+                }
+              };
               const noB = document.createElement("button");
               noB.className = "btn-reject";
               noB.textContent = "Dismiss";
@@ -231,7 +253,12 @@ export function startUiServer(botsDir: string, port = 4242) {
     if (req.method === "POST" && (url.pathname === "/api/run-stream" || url.pathname === "/api/run")) {
       let raw = "";
       for await (const chunk of req) raw += chunk;
-      const body = JSON.parse(raw || "{}") as { bot?: string; input?: string; headed?: boolean };
+      const body = JSON.parse(raw || "{}") as {
+        bot?: string;
+        input?: string;
+        headed?: boolean;
+        approvedToolResults?: Record<string, unknown>;
+      };
       const bots = discoverBots(absBotsDir);
       const match = bots.find((b) => b.manifest.name === body.bot);
       if (!match) {
@@ -304,6 +331,7 @@ export function startUiServer(botsDir: string, port = 4242) {
         const result = await runBot(loadBotBundle(match.dir), {
           input: body.input,
           cwd: resolve(absBotsDir, ".."),
+          approvedToolResults: body.approvedToolResults,
           onEvent: isStream ? sendEvent : undefined,
         });
         if (isStream) res.end();

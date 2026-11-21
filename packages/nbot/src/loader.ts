@@ -22,6 +22,28 @@ export function parseSkillMarkdown(raw: string): {
 }
 
 /**
+ * Parse an in-memory portable nbot bundle (`nbot.yaml` + `SKILL.md` strings) without touching disk.
+ */
+export function parseBotBundle(
+  manifestYaml: string,
+  skillRaw: string,
+  dir: string = process.cwd(),
+): BotBundle {
+  const manifest = YAML.parse(manifestYaml) as BotManifest;
+  if (!manifest?.name) {
+    throw new Error("nbot.yaml manifest must define 'name'");
+  }
+  const { frontmatter, body } = parseSkillMarkdown(skillRaw);
+  return {
+    dir: resolve(dir),
+    manifest,
+    skillRaw,
+    skillBody: body,
+    skillFrontmatter: frontmatter,
+  };
+}
+
+/**
  * Load a portable nbot bundle (`nbot.yaml` + `SKILL.md`) from a directory.
  */
 export function loadBotBundle(botDir: string): BotBundle {

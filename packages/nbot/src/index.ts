@@ -1,4 +1,4 @@
-export { discoverBots, loadBotBundle, parseSkillMarkdown } from "./loader.js";
+export { discoverBots, loadBotBundle, parseBotBundle, parseSkillMarkdown } from "./loader.js";
 export { createNbot, narrowTools, runBot } from "./runner.js";
 export { defaultTools } from "./tools.js";
 export type {
@@ -7,6 +7,7 @@ export type {
   BotBundle,
   BotManifest,
   BotModelConfig,
+  DeclarativeToolSpec,
   HarnessStreamEvent,
   NbotClientOptions,
   PendingApproval,

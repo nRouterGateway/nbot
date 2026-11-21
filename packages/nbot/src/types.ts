@@ -14,19 +14,29 @@ export interface BotBrowserConfig {
   profile?: string;
 }
 
+export interface DeclarativeToolSpec {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+  requiresApproval?: boolean;
+  mockResponse?: unknown;
+}
+
 export interface BotManifest {
   name: string;
   version?: string;
   description?: string;
-  harness?: "api" | "claude-code";
+  harness?: "api" | "claude-code" | "nbot" | "nrouter";
   trigger?: {
     type?: string;
     cron?: string;
   };
   model?: BotModelConfig;
+  parameters?: Record<string, unknown>;
+  tools?: DeclarativeToolSpec[];
   approval_policy?: BotApprovalPolicy;
   browser?: BotBrowserConfig;
-  sandbox?: "none" | "docker";
+  sandbox?: "none" | "docker" | "local" | "e2b";
 }
 
 export interface SkillFrontmatter {
@@ -58,6 +68,7 @@ export interface ToolDefinition {
 }
 
 export interface PendingApproval {
+  id: string;
   tool: string;
   args: Record<string, unknown>;
   reason: string;
@@ -89,6 +100,8 @@ export interface RunBotOptions {
   model?: string;
   maxSteps?: number;
   extraTools?: ToolDefinition[];
+  /** Approved tool-call IDs or tool names mapped to approved execution results (or `true` to execute the gated tool). */
+  approvedToolResults?: Record<string, unknown>;
   dryRun?: boolean;
   onEvent?: (event: HarnessStreamEvent) => void;
 }
